@@ -77,6 +77,9 @@ class Processor:
         self._halted = False
         self._input_buffer = []
         self._output_buffer = []
+        # Decoded instruction placeholders for micro-step execution
+        self._decoded_opcode = None
+        self._decoded_operand = None
 
     @property
     def acc(self) -> Register:
@@ -134,15 +137,38 @@ class Processor:
         self._ir.value = self._memory_bus.read(current_address)
         self.increment_pc()
 
-    def decode_and_execute(self) -> None:
-        """Decodes and executes the instruction in IR."""
+    def decode(self) -> None:
+        """Decode the instruction currently in IR and store decoded fields for later execution.
+
+        This method does not execute the instruction; it only determines opcode and operand
+        and stores them in internal placeholders for execute_decoded().
+        """
         if self._halted:
             return
-        
-        opcode = self._ir.value // 100        # First digit(s)
-        operand = self._ir.value % 100        # Last two digits (address)
+        opcode = self._ir.value // 100
+        operand = self._ir.value % 100
+        self._decoded_opcode = opcode
+        self._decoded_operand = operand
 
-        # LMC Instruction Set Implementation
+    def execute_decoded(self) -> None:
+        """Execute the previously decoded instruction.
+
+        Requires that decode() was called before. After execution the decoded fields
+        are cleared.
+        """
+        if self._halted:
+            return
+        if self._decoded_opcode is None:
+            raise RuntimeError("No decoded instruction to execute. Call decode() first.")
+
+        opcode = self._decoded_opcode
+        operand = self._decoded_operand
+
+        # Clear decoded placeholders (single-shot execution)
+        self._decoded_opcode = None
+        self._decoded_operand = None
+
+        # Execute based on opcode
         if opcode == 0:
             self._execute_hlt()
         elif opcode == 1:
@@ -165,9 +191,20 @@ class Processor:
             elif operand == 2:
                 self._execute_out()
             else:
-                raise ValueError(f"Unknown instruction: {self._ir.value}")
+                raise ValueError(f"Unknown instruction code: {opcode}{operand:02d}")
         else:
             raise ValueError(f"Unknown opcode: {opcode}")
+
+    def decode_and_execute(self) -> None:
+        """Backward-compatible convenience that decodes then executes immediately."""
+        self.decode()
+        self.execute_decoded()
+
+    def get_decoded(self):
+        """Return the last decoded (opcode, operand) or None if nothing decoded."""
+        if self._decoded_opcode is None:
+            return None
+        return (self._decoded_opcode, self._decoded_operand)
 
     def execute_cycle(self) -> bool:
         """
