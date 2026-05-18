@@ -16,7 +16,6 @@ class LmcGui:
         main_frame = ttk.Frame(root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        # Registers
         reg_frame = ttk.LabelFrame(main_frame, text="Registers", padding="8")
         reg_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
 
@@ -27,7 +26,6 @@ class LmcGui:
         self.ir_label = ttk.Label(reg_frame, text="IR: 000", font=("Courier", 14, "bold"))
         self.ir_label.grid(row=0, column=2, padx=20)
 
-        # Memory Mapping
         mem_frame = ttk.LabelFrame(main_frame, text="Memory (0–99)", padding="5")
         mem_frame.grid(row=1, column=0, columnspan=2, pady=(0, 10))
 
@@ -41,7 +39,6 @@ class LmcGui:
                 row.append(lbl)
             self.mem_cells.append(row)
 
-        # Control Buttons
         btn_frame = ttk.Frame(main_frame)
         btn_frame.grid(row=2, column=0, columnspan=2, pady=10)
 
@@ -87,7 +84,7 @@ class LmcGui:
             self.refresh_display()
 
             if not running:
-                self.status_var.set("Program halted (HLT)")
+                self.status_var.set("Program finished (HLT)")
                 return False
 
             self.status_var.set(f"Executed {instr:03d} | PC: {self.cpu.pc.value:02d}")
@@ -136,25 +133,27 @@ class LmcGui:
         self.halted = False
         self.is_running = False
         self.refresh_display()
-        self.status_var.set("CPU has been reset.")
+        self.status_var.set("CPU Reset. Ready.")
 
     def load_sample(self):
         for i in range(100):
             self.memory_adapter.write(i, 0)
 
+        # Sample program with INP, OUT and other functions
         self.memory_adapter.write(0, 901)   # INP
         self.memory_adapter.write(1, 902)   # OUT
         self.memory_adapter.write(2, 508)   # LDA 08
         self.memory_adapter.write(3, 109)   # ADD 09
-        self.memory_adapter.write(4, 902)   # OUT
-        self.memory_adapter.write(5, 0)     # HLT
+        self.memory_adapter.write(4, 310)   # STA 10
+        self.memory_adapter.write(5, 902)   # OUT
+        self.memory_adapter.write(6, 0)     # HLT
 
-        self.memory_adapter.write(8, 25)
-        self.memory_adapter.write(9, 17)
+        self.memory_adapter.write(8, 45)
+        self.memory_adapter.write(9, 27)
 
         self.cpu.reset()
         self.refresh_display()
-        self.status_var.set("Sample loaded: INP → OUT → 25+17 → OUT")
+        self.status_var.set("Sample loaded: INP → OUT → ADD → OUT")
 
 if __name__ == "__main__":
     root = tk.Tk()
