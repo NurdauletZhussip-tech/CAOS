@@ -67,6 +67,7 @@ class Processor:
     """
     Single Responsibility Principle (SRP) & Open/Closed Principle (OCP):
     Manages the architectural state (registers) and orchestrates CPU cycles.
+    Implements the LMC instruction set with proper fetch-decode-execute cycle.
     """
     def __init__(self, memory_bus: MemoryInterface):
         # Composition: Processor is composed of individual Register components
@@ -74,6 +75,9 @@ class Processor:
         self._pc = Register(name="PC", min_value=0, max_value=99, display_width=2)     # Program Counter
         self._ir = Register(name="IR", min_value=0, max_value=999, display_width=3)    # Instruction Register
         self._memory_bus = memory_bus
+        self._halted = False
+        self._input_buffer = []
+        self._output_buffer = []
 
     @property
     def acc(self) -> Register:
@@ -87,6 +91,20 @@ class Processor:
     def ir(self) -> Register:
         return self._ir
 
+    @property
+    def halted(self) -> bool:
+        return self._halted
+
+    @property
+    def output_buffer(self) -> list:
+        return self._output_buffer
+
+    def set_input(self, value: int) -> None:
+        """Sets input value for INP instruction."""
+        if not (0 <= value <= 999):
+            raise ValueError(f"Input value {value} must be 0-999")
+        self._input_buffer.append(value)
+
     def increment_pc(self) -> None:
         """Increments the PC, ensuring it wraps around within the LMC 100-cell space."""
         self._pc.value = (self._pc.value + 1) % 100
@@ -96,16 +114,123 @@ class Processor:
         self._acc.reset()
         self._pc.reset()
         self._ir.reset()
+        self._halted = False
+        self._output_buffer.clear()
 
     def fetch(self) -> None:
         """Fetches the next instruction from memory into the IR and increments the PC."""
+        if self._halted:
+            return
         current_address = self._pc.value
         self._ir.value = self._memory_bus.read(current_address)
         self.increment_pc()
 
+    def decode_and_execute(self) -> None:
+        """Decodes and executes the instruction in IR."""
+        if self._halted:
+            return
+        
+        opcode = self._ir.value // 100        # First digit(s)
+        operand = self._ir.value % 100        # Last two digits (address)
+
+        # LMC Instruction Set Implementation
+        if opcode == 0:
+            self._execute_hlt()
+        elif opcode == 1:
+            self._execute_add(operand)
+        elif opcode == 2:
+            self._execute_sub(operand)
+        elif opcode == 3:
+            self._execute_sta(operand)
+        elif opcode == 5:
+            self._execute_lda(operand)
+        elif opcode == 6:
+            self._execute_bra(operand)
+        elif opcode == 7:
+            self._execute_brz(operand)
+        elif opcode == 8:
+            self._execute_brp(operand)
+        elif opcode == 9:
+            if operand == 1:
+                self._execute_inp()
+            elif operand == 2:
+                self._execute_out()
+            else:
+                raise ValueError(f"Unknown instruction: {self._ir.value}")
+        else:
+            raise ValueError(f"Unknown opcode: {opcode}")
+
+    def execute_cycle(self) -> bool:
+        """
+        Executes one complete fetch-decode-execute cycle.
+        Returns True if CPU is still running, False if halted.
+        """
+        if self._halted:
+            return False
+        
+        try:
+            self.fetch()
+            self.decode_and_execute()
+            return not self._halted
+        except Exception as e:
+            print(f"Execution error: {e}")
+            self._halted = True
+            return False
+
+    # ========================================================================
+    # LMC Instruction Implementations
+    # ========================================================================
+
+    def _execute_hlt(self) -> None:
+        """HLT (000): Halt the computer."""
+        self._halted = True
+
+    def _execute_add(self, address: int) -> None:
+        """ADD (1xx): Add value at address to ACC."""
+        value = self._memory_bus.read(address)
+        self._acc.value = (self._acc.value + value) % 1000
+
+    def _execute_sub(self, address: int) -> None:
+        """SUB (2xx): Subtract value at address from ACC."""
+        value = self._memory_bus.read(address)
+        self._acc.value = (self._acc.value - value) % 1000
+
+    def _execute_sta(self, address: int) -> None:
+        """STA (3xx): Store ACC value at address."""
+        self._memory_bus.write(address, self._acc.value)
+
+    def _execute_lda(self, address: int) -> None:
+        """LDA (5xx): Load value from address into ACC."""
+        self._acc.value = self._memory_bus.read(address)
+
+    def _execute_bra(self, address: int) -> None:
+        """BRA (6xx): Branch unconditionally to address."""
+        self._pc.value = address
+
+    def _execute_brz(self, address: int) -> None:
+        """BRZ (7xx): Branch to address if ACC is zero."""
+        if self._acc.value == 0:
+            self._pc.value = address
+
+    def _execute_brp(self, address: int) -> None:
+        """BRP (8xx): Branch to address if ACC is positive (>= 0)."""
+        if self._acc.value >= 0:
+            self._pc.value = address
+
+    def _execute_inp(self) -> None:
+        """INP (901): Read input and store in ACC."""
+        if not self._input_buffer:
+            raise RuntimeError("INP: No input available")
+        value = self._input_buffer.pop(0)
+        self._acc.value = value
+
+    def _execute_out(self) -> None:
+        """OUT (902): Output ACC value."""
+        self._output_buffer.append(self._acc.value)
+
     def display_status(self) -> None:
         """Prints the CPU's current execution status."""
-        print(f"[CPU State] ACC: {self._acc} | PC: {self._pc} | IR: {self._ir}")
+        print(f"[CPU State] ACC: {self._acc} | PC: {self._pc} | IR: {self._ir} | Halted: {self._halted}")
 
 
 # Example Usage Breakdown
