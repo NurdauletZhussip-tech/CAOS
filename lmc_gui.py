@@ -98,22 +98,54 @@ class LmcGui:
             messagebox.showinfo("Halted", "CPU is halted. Press Reset to continue.")
             return
 
-        try:
-            # Execute one complete fetch-decode-execute cycle
-            instruction_before = self.cpu.ir.value
-            running = self.cpu.execute_cycle()
-            self._update_halted_status()
-            
-            # Update displayed state
-            self.refresh_display()
+        while True:
+            try:
+                # Execute one complete fetch-decode-execute cycle
+                instruction_before = self.cpu.ir.value
+                running = self.cpu.execute_cycle()
+                self._update_halted_status()
 
-            if running:
-                self.status_var.set(f"Executed: {instruction_before:03d} | PC now: {self.cpu.pc.value:02d}")
-            else:
-                self.status_var.set("Program halted. (HLT instruction executed)")
-        except Exception as e:
-            messagebox.showerror("Execution Error", str(e))
-            self.halted = True
+                # If there are OUT values, display them and clear buffer
+                if self.cpu.output_buffer:
+                    for outv in list(self.cpu.output_buffer):
+                        messagebox.showinfo("OUT", f"Output: {outv:03d}")
+                    self.cpu.output_buffer.clear()
+
+                # Update displayed state
+                self.refresh_display()
+
+                if running:
+                    self.status_var.set(f"Executed: {instruction_before:03d} | PC now: {self.cpu.pc.value:02d}")
+                else:
+                    self.status_var.set("Program halted. (HLT instruction executed)")
+                break
+
+            except RuntimeError as e:
+                # Handle INP when no input is available by prompting the user
+                if "INP: No input" in str(e):
+                    from tkinter import simpledialog
+                    val = simpledialog.askinteger("INP", "Enter input (0-999):", parent=self.root, minvalue=0, maxvalue=999)
+                    if val is None:
+                        messagebox.showwarning("INP cancelled", "No input provided. Halting execution.")
+                        self.halted = True
+                        break
+                    try:
+                        self.cpu.set_input(int(val))
+                    except Exception as ex:
+                        messagebox.showerror("Input Error", str(ex))
+                        self.halted = True
+                        break
+                    # Retry executing the cycle which will now consume the input
+                    continue
+                else:
+                    messagebox.showerror("Execution Error", str(e))
+                    self.halted = True
+                    break
+
+            except Exception as e:
+                messagebox.showerror("Execution Error", str(e))
+                self.halted = True
+                break
 
     def reset_cpu(self):
         """Reset CPU registers and clear halted flag."""

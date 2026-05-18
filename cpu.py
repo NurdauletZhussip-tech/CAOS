@@ -49,8 +49,7 @@ class Register:
     def value(self, new_value: int):
         if not (self._min_value <= new_value <= self._max_value):
             raise ValueError(
-                f"Register {self._name} Error: Value {new_value} is out of bounds "
-                f"(${self._min_value} \\le \\text{{value}} \\le {self._max_value}$)."
+                f"Register {self._name} Error: Value {new_value} is out of bounds ({self._min_value}..{self._max_value})."
             )
         self._value = new_value
 
@@ -108,6 +107,16 @@ class Processor:
     def increment_pc(self) -> None:
         """Increments the PC, ensuring it wraps around within the LMC 100-cell space."""
         self._pc.value = (self._pc.value + 1) % 100
+
+    def _signed_acc(self) -> int:
+        """Return accumulator interpreted as signed value (-500..+499).
+
+        Values 0..499 -> 0..499 (non-negative)
+        Values 500..999 -> -500..-1 (negative)
+        This helps branch instructions (BRP) decide sign correctly when arithmetic wraps around modulo 1000.
+        """
+        v = self._acc.value
+        return v if v < 500 else v - 1000
 
     def reset(self) -> None:
         """Resets all internal registers."""
@@ -213,8 +222,12 @@ class Processor:
             self._pc.value = address
 
     def _execute_brp(self, address: int) -> None:
-        """BRP (8xx): Branch to address if ACC is positive (>= 0)."""
-        if self._acc.value >= 0:
+        """BRP (8xx): Branch to address if ACC is positive (>= 0).
+
+        Uses signed interpretation of the accumulator to decide positivity when
+        arithmetic wraps modulo 1000.
+        """
+        if self._signed_acc() >= 0:
             self._pc.value = address
 
     def _execute_inp(self) -> None:
