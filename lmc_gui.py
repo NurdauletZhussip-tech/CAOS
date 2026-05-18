@@ -62,6 +62,7 @@ class LmcGui:
 
         # Initial refresh
         self.refresh_display()
+        self._update_halted_status()
 
     # --------------------------------------------------------------------------
     # Display updates
@@ -81,73 +82,35 @@ class LmcGui:
         self.ir_label.config(text=f"IR: {self.cpu.ir.value:03d}")
 
     # --------------------------------------------------------------------------
-    # LMC Instruction Execution (called after fetch)
+    # Status update helper
     # --------------------------------------------------------------------------
-    def execute_instruction(self):
-        """Decode and execute the instruction currently in IR."""
-        opcode = self.cpu.ir.value // 100        # first digit
-        operand = self.cpu.ir.value % 100        # last two digits (address)
-
-        # Branch helpers
-        def branch_to(addr):
-            self.cpu.pc.value = addr
-
-        if opcode == 0:          # HALT
-            self.halted = True
-            self.status_var.set("HALT encountered – execution stopped.")
-            return
-
-        elif opcode == 1:        # ADD
-            val = self.memory_adapter.read(operand)
-            new_acc = (self.cpu.acc.value + val) % 1000
-            self.cpu.acc.value = new_acc
-
-        elif opcode == 2:        # SUB
-            val = self.memory_adapter.read(operand)
-            new_acc = (self.cpu.acc.value - val) % 1000
-            self.cpu.acc.value = new_acc
-
-        elif opcode == 3:        # STORE
-            self.memory_adapter.write(operand, self.cpu.acc.value)
-
-        elif opcode == 5:        # LOAD
-            self.cpu.acc.value = self.memory_adapter.read(operand)
-
-        elif opcode == 6:        # BRANCH (unconditional)
-            branch_to(operand)
-
-        elif opcode == 7:        # BRANCHZ (branch if ACC == 0)
-            if self.cpu.acc.value == 0:
-                branch_to(operand)
-
-        elif opcode == 8:        # BRANCHPOS (branch if ACC >= 0)
-            if self.cpu.acc.value >= 0:
-                branch_to(operand)
-
-        else:
-            self.status_var.set(f"Unknown opcode {opcode} (ignored).")
+    def _update_halted_status(self):
+        """Synchronizes GUI halted flag with CPU halted status."""
+        self.halted = self.cpu.halted
 
     # --------------------------------------------------------------------------
     # Control actions
     # --------------------------------------------------------------------------
     def step(self):
-        """Perform one fetch+execute cycle."""
+        """Perform one fetch+decode+execute cycle."""
+        self._update_halted_status()
         if self.halted:
             messagebox.showinfo("Halted", "CPU is halted. Press Reset to continue.")
             return
 
         try:
-            # Fetch instruction into IR and increment PC
-            self.cpu.fetch()
-            # Execute the fetched instruction
-            self.execute_instruction()
+            # Execute one complete fetch-decode-execute cycle
+            instruction_before = self.cpu.ir.value
+            running = self.cpu.execute_cycle()
+            self._update_halted_status()
+            
             # Update displayed state
             self.refresh_display()
 
-            if not self.halted:
-                self.status_var.set(f"Executed: {self.cpu.ir.value:03d} | PC now: {self.cpu.pc.value:02d}")
+            if running:
+                self.status_var.set(f"Executed: {instruction_before:03d} | PC now: {self.cpu.pc.value:02d}")
             else:
-                self.status_var.set("Program halted.")
+                self.status_var.set("Program halted. (HLT instruction executed)")
         except Exception as e:
             messagebox.showerror("Execution Error", str(e))
             self.halted = True
@@ -155,7 +118,7 @@ class LmcGui:
     def reset_cpu(self):
         """Reset CPU registers and clear halted flag."""
         self.cpu.reset()
-        self.halted = False
+        self._update_halted_status()
         self.refresh_display()
         self.status_var.set("CPU reset. Program counter = 0.")
 
@@ -185,7 +148,7 @@ class LmcGui:
 
         # Reset CPU and start from address 0
         self.cpu.reset()
-        self.halted = False
+        self._update_halted_status()
         self.refresh_display()
         self.status_var.set("Sample program loaded (adds 5 + 3, stores result at address 10). Use Step to run.")
 
