@@ -17,6 +17,9 @@ class LmcGui:
         # Переменная для отслеживания микрошагов цикла процессора: "FETCH", "DECODE", "EXECUTE"
         self.cycle_phase = "FETCH"
 
+        # Счетчик команд для логирования
+        self.instruction_count = 0
+
         # Главный контейнер
         main_frame = ttk.Frame(root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -105,20 +108,52 @@ class LmcGui:
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding="3")
         status_bar.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
 
+        # --- Фрейм для логирования выполнения ---
+        log_frame = ttk.LabelFrame(main_frame, text="Execution Log (История выполнения)", padding="5")
+        log_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+
+        self.log_text = tk.Text(log_frame, height=8, width=80, font=("Courier", 9), bg="#f5f5f5")
+        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Scrollbar для логов
+        log_scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        log_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.log_text.config(yscrollcommand=log_scrollbar.set)
+
         self.refresh_display()
 
     def refresh_display(self):
         """Обновление всего графического интерфейса в соответствии с состоянием памяти и CPU."""
+        # Получаем информацию о текущей инструкции для выделения
+        current_decoded = self.cpu.get_decoded()
+        operand_addr = None
+        if current_decoded:
+            op, operand = current_decoded
+            # Для инструкций, которые обращаются к памяти, сохраняем адрес операнда
+            if op in [1, 2, 3, 5, 6, 7, 8]:  # ADD, SUB, STA, LDA, BRA, BRZ, BRP
+                operand_addr = operand
+
         for addr in range(100):
             r, c = divmod(addr, 10)
             val = self.memory_adapter.read(addr)
             self.mem_cells[r][c].config(text=f"{val:03d}")
 
-            # Подсветка ячейки, на которую указывает программный счетчик (PC) в фазе FETCH
-            if addr == self.cpu.pc.value and not self.halted:
-                self.mem_cells[r][c].config(bg="#cfe2ff")  # Нежно-синий цвет для текущего PC
-            else:
-                self.mem_cells[r][c].config(bg="#f0f0f0")
+            # Определяем цвет подсветки ячейки
+            bg_color = "#f0f0f0"  # Стандартный серый
+
+            # Подсветка ячейки, на которую указывает PC (голубой)
+            if addr == self.cpu.pc.value and self.cycle_phase == "FETCH" and not self.halted:
+                bg_color = "#cfe2ff"  # Нежно-синий для текущего PC на фазе FETCH
+
+            # Подсветка операнда (желтый) во время DECODE/EXECUTE
+            elif addr == operand_addr and self.cycle_phase in ["DECODE", "EXECUTE"]:
+                bg_color = "#fffacd"  # Бледно-желтый для операнда
+
+            # Подсветка для текущего PC в других фазах (светлая подсветка)
+            elif addr == self.cpu.pc.value and not self.halted:
+                bg_color = "#e7f3ff"  # Очень светлый голубой
+
+            self.mem_cells[r][c].config(bg=bg_color)
 
         # Обновление лейблов регистров
         self.acc_label.config(text=f"ACC: {self.cpu.acc.value:03d}")
@@ -137,6 +172,12 @@ class LmcGui:
     def _update_halted(self):
         self.halted = self.cpu.halted
 
+    def _add_log(self, message):
+        """Добавляет сообщение в лог выполнения."""
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)  # Прокручиваем к концу
+        self.log_text.update()
+
     def step(self):
         """Выполняет строго ОДНУ микро-операцию из Fetch->Decode->Execute."""
         if self.halted:
@@ -146,10 +187,13 @@ class LmcGui:
         try:
             if self.cycle_phase == "FETCH":
                 current_pc = self.cpu.pc.value
+                instr_value = self.memory_adapter.read(current_pc)
                 self.cpu.fetch()
                 self.cycle_phase = "DECODE"
                 self.refresh_display()
-                self.status_var.set(f"[FETCH] Inst from cell {current_pc:02d} loaded into IR ({self.cpu.ir.value:03d}). PC incremented.")
+                msg = f"[FETCH] Инструкция 0x{instr_value:03d} загружена из ячейки {current_pc:02d} в IR. PC инкрементирован на {self.cpu.pc.value:02d}."
+                self.status_var.set(msg)
+                self._add_log(msg)
 
             elif self.cycle_phase == "DECODE":
                 self.cpu.decode()
@@ -159,23 +203,32 @@ class LmcGui:
                 if decoded:
                     op, operand = decoded
                     cmd_name = self.get_cmd_name(op, operand)
-                    self.status_var.set(f"[DECODE] IR broken down into -> Operation: {cmd_name}, Operand address: {operand:02d}.")
+                    opcode_str = f"{op}{operand:02d}"
+                    msg = f"[DECODE] Инструкция 0x{opcode_str} разбита на: Код операции={op}, Операнд/Адрес={operand:02d} ({cmd_name})"
+                    self.status_var.set(msg)
+                    self._add_log(msg)
 
             elif self.cycle_phase == "EXECUTE":
                 decoded = self.cpu.get_decoded()
                 if decoded:
                     op, operand = decoded
+                    cmd_name = self.get_cmd_name(op, operand)
+
                     # Перехват ручного ввода INP, если буфер пуст
                     if op == 9 and operand == 1 and not self.cpu._input_buffer:
                         was_running = self.is_running
                         self.is_running = False  # Приостанавливаем авто-ран
 
-                        val = simpledialog.askinteger("INP Instruction", "Enter an integer (0-999):",
-                                                      parent=self.root, minvalue=0, maxvalue=999)
+                        val = simpledialog.askinteger("INP Instruction",
+                                                       "Введите ЗНАЧЕНИЕ (0-999), которое будет загружено в ACC:",
+                                                       parent=self.root, minvalue=0, maxvalue=999)
                         if val is None:
                             self.status_var.set("Execution paused. Waiting for valid INP input.")
+                            self._add_log("⏸ Ввод прерван пользователем.")
                             return
                         self.cpu.set_input(val)
+                        self._add_log(f"📥 Пользовательский ввод: {val:03d}")
+                        self.refresh_display()
 
                         if was_running: # Возвращаем авто-ран, если он был активен
                             self.is_running = True
@@ -183,25 +236,39 @@ class LmcGui:
                             return
 
                 # Сама стадия выполнения
-                self.cpu.execute_decoded()
-                self._update_halted()
+                try:
+                    self.cpu.execute_decoded()
+                    self._update_halted()
 
-                # Проверка буфера вывода OUT
-                if self.cpu.output_buffer:
-                    for v in list(self.cpu.output_buffer):
-                        messagebox.showinfo("OUT Instruction", f"LMC Output Window: {v:03d}")
-                    self.cpu.output_buffer.clear()
+                    # Генерируем подробное сообщение о выполненной команде
+                    exec_msg = self._generate_execute_message(op, operand)
 
-                self.cycle_phase = "FETCH"
-                self.refresh_display()
+                    # Проверка буфера вывода OUT
+                    if self.cpu.output_buffer:
+                        for v in list(self.cpu.output_buffer):
+                            messagebox.showinfo("OUT Instruction", f"LMC Output: {v:03d}")
+                            self._add_log(f"📤 Вывод: {v:03d}")
+                        self.cpu.output_buffer.clear()
 
-                if self.halted:
-                    self.status_var.set("Program execution finished (HLT reached).")
-                else:
-                    self.status_var.set("[EXECUTE] Instruction cycle finished. Ready for next FETCH.")
+                    self.cycle_phase = "FETCH"
+                    self.refresh_display()
+
+                    if self.halted:
+                        msg = "✓ Program execution finished (HLT reached)."
+                        self.status_var.set(msg)
+                        self._add_log(f"\n{'='*60}\n{msg}\n{'='*60}\n")
+                    else:
+                        self.status_var.set(exec_msg)
+                        self._add_log(exec_msg)
+                except Exception as e:
+                    messagebox.showerror("Execution Error", f"Ошибка при выполнении: {str(e)}")
+                    self._add_log(f"❌ ERROR: {str(e)}")
+                    self.halted = True
+                    self.is_running = False
 
         except Exception as e:
             messagebox.showerror("Execution Error", str(e))
+            self._add_log(f"❌ ERROR: {str(e)}")
             self.halted = True
             self.is_running = False
 
@@ -239,8 +306,12 @@ class LmcGui:
         self.halted = False
         self.is_running = False
         self.cycle_phase = "FETCH"
+        self.instruction_count = 0
+        self.log_text.delete(1.0, tk.END)  # Очищаем лог
         self.refresh_display()
-        self.status_var.set("CPU Reset. Phase set to FETCH. Ready.")
+        msg = "CPU Reset. Phase set to FETCH. Ready."
+        self.status_var.set(msg)
+        self._add_log(msg)
 
     # --- Обработчики ручного ввода и селектора команд ---
 
@@ -318,6 +389,41 @@ class LmcGui:
             if am == 2: return "OUT"
         return "UNKNOWN"
 
+    def _generate_execute_message(self, op, operand):
+        """Генерирует подробное сообщение о выполненной операции."""
+        if op == 0:
+            return f"[EXECUTE] HLT: Программа остановлена."
+        elif op == 1:
+            val = self.memory_adapter.read(operand)
+            return f"[EXECUTE] ADD 0x{operand:02d}: ACC = {self.cpu.acc.value:03d} (добавлено значение {val:03d} из ячейки {operand:02d})"
+        elif op == 2:
+            val = self.memory_adapter.read(operand)
+            return f"[EXECUTE] SUB 0x{operand:02d}: ACC = {self.cpu.acc.value:03d} (вычтено значение {val:03d} из ячейки {operand:02d})"
+        elif op == 3:
+            val = self.cpu.acc.value
+            return f"[EXECUTE] STA 0x{operand:02d}: Значение ACC ({val:03d}) сохранено в ячейку {operand:02d}"
+        elif op == 5:
+            val = self.memory_adapter.read(operand)
+            return f"[EXECUTE] LDA 0x{operand:02d}: ACC загружен значением {val:03d} из ячейки {operand:02d}"
+        elif op == 6:
+            return f"[EXECUTE] BRA: Переход на адрес {operand:02d}. PC установлен на {operand:02d}"
+        elif op == 7:
+            if self.cpu.acc.value == 0:
+                return f"[EXECUTE] BRZ: ACC = 0, переход на адрес {operand:02d}. PC = {operand:02d}"
+            else:
+                return f"[EXECUTE] BRZ: ACC = {self.cpu.acc.value:03d} (≠ 0), переход НЕ выполнен"
+        elif op == 8:
+            if self.cpu._signed_acc() >= 0:
+                return f"[EXECUTE] BRP: ACC = {self.cpu.acc.value:03d} (положительное), переход на {operand:02d}. PC = {operand:02d}"
+            else:
+                return f"[EXECUTE] BRP: ACC = {self.cpu.acc.value:03d} (отрицательное), переход НЕ выполнен"
+        elif op == 9:
+            if operand == 1:
+                return f"[EXECUTE] INP: Пользовательский ввод загружен в ACC = {self.cpu.acc.value:03d}"
+            elif operand == 2:
+                return f"[EXECUTE] OUT: Вывод значения {self.cpu.acc.value:03d} из ACC"
+        return f"[EXECUTE] Неизвестная команда"
+
     def load_sample(self):
         """Загрузка базового демонстрационного примера со всеми ключевыми операциями."""
         for i in range(100):
@@ -340,8 +446,24 @@ class LmcGui:
         self.cycle_phase = "FETCH"
         self.halted = False
         self.is_running = False
+        self.instruction_count = 0
+        self.log_text.delete(1.0, tk.END)  # Очищаем лог
         self.refresh_display()
-        self.status_var.set("Sample loaded: INP → OUT → LDA → ADD → STA → OUT → HLT.")
+        msg = "Sample loaded: INP → OUT → LDA → ADD → STA → OUT → HLT."
+        self.status_var.set(msg)
+        self._add_log(msg)
+        self._add_log("Program memory:")
+        self._add_log("  [00] = 901 (INP)")
+        self._add_log("  [01] = 902 (OUT)")
+        self._add_log("  [02] = 508 (LDA 08)")
+        self._add_log("  [03] = 109 (ADD 09)")
+        self._add_log("  [04] = 310 (STA 10)")
+        self._add_log("  [05] = 902 (OUT)")
+        self._add_log("  [06] = 000 (HLT)")
+        self._add_log("Data memory:")
+        self._add_log("  [08] = 045")
+        self._add_log("  [09] = 027")
+        self._add_log(f"\n{'='*60}\nНажмите 'Micro-Step' для начала выполнения\n{'='*60}\n")
 
 if __name__ == "__main__":
     root = tk.Tk()
